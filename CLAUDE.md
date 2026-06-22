@@ -22,6 +22,16 @@ Open a remote drive `(host, drive_id)` over the CE mesh by presenting a `ce-cap`
 `cargo run --example host_and_access -p ce-drive-client` — boots two in-process CE nodes, hosts a
 drive on B, accesses it from A by capability (open/write/read/mirror). The CLI demo from the plan.
 
+## Tests
+- `cargo test --lib` — `readplan`: `slice_range` edge cases (offset<base clamp, len overrun, zero-len,
+  past-end empty) + proptests (`slice_range` total/in-bounds for any input; exact-window when inside
+  the buffer) + the CID-tamper invariant (`data::cid` detects any byte flip → `fetch_plan` catches a
+  lying host).
+- `tests/client_surface.rs` — handle construction (`host`, `with_timeout_ms` builder), the wire
+  vocabulary is re-exported, and the client's request encoding is host-decodable (`decode_req`).
+- The full request/reply path is covered live by `ce-drive-serve`'s `two_node_full` (the client is a
+  dev-dep there), which drives `RemoteDrive`/`Mirror` end-to-end over a real 2-node mesh.
+
 ## Standards
 Edition 2024, `anyhow::Result`, `tracing` (no `println!` in the lib), no `unsafe`/`unwrap()` in prod,
 no emojis. Author: Leif Rydenfalk. No co-author lines.

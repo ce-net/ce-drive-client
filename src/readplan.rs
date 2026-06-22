@@ -75,4 +75,93 @@ mod tests {
         let whole = vec![0u8; 100];
         assert!(slice_range(whole, 1000, 5000, Some(10)).is_empty());
     }
+
+    #[test]
+    fn slice_offset_before_base_clamps_to_base() {
+        // offset < base: saturating_sub yields rel_start 0 (we never index negative).
+        let whole: Vec<u8> = (0..100u32).map(|i| i as u8).collect();
+        let got = slice_range(whole.clone(), 1000, 500, Some(10));
+        assert_eq!(got, &whole[0..10]);
+    }
+
+    #[test]
+    fn slice_len_overruns_clamp_to_end() {
+        let whole: Vec<u8> = (0..100u32).map(|i| i as u8).collect();
+        // Ask for way more than available from rel_start.
+        let got = slice_range(whole.clone(), 0, 90, Some(1000));
+        assert_eq!(got, &whole[90..100]);
+    }
+
+    #[test]
+    fn slice_zero_len_is_empty() {
+        let whole = vec![7u8; 50];
+        assert_eq!(slice_range(whole, 0, 10, Some(0)), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn slice_exact_base_no_len_returns_all() {
+        let whole: Vec<u8> = (0..30u32).map(|i| i as u8).collect();
+        assert_eq!(slice_range(whole.clone(), 100, 100, None), whole);
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::slice_range;
+    use ce_rs::data;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(500))]
+
+        /// `slice_range` never panics and never reads outside the buffer, for any inputs.
+        #[test]
+        fn slice_range_is_total_and_in_bounds(
+            len_whole in 0usize..512,
+            base in any::<u64>(),
+            offset in any::<u64>(),
+            req in proptest::option::of(any::<u64>()),
+        ) {
+            let whole: Vec<u8> = (0..len_whole).map(|i| i as u8).collect();
+            let out = slice_range(whole, base, offset, req);
+            // The result is always a sub-slice length: <= the original buffer.
+            prop_assert!(out.len() <= len_whole);
+            // If a definite len was requested, the result never exceeds it.
+            if let Some(l) = req {
+                prop_assert!(out.len() as u64 <= l);
+            }
+        }
+
+        /// When the window lands fully inside the chunk-aligned buffer, the bytes returned are exactly
+        /// the requested window of the original object (verifies the slice math, not just bounds).
+        #[test]
+        fn slice_range_returns_exact_window(
+            base in 0u64..1000,
+            extra in 0u64..200,        // offset above base, kept within the buffer
+            want in 1u64..100,
+        ) {
+            // Build a buffer big enough to fully contain [offset, offset+want).
+            let total = (extra + want + 10) as usize;
+            let whole: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+            let offset = base + extra;
+            let out = slice_range(whole.clone(), base, offset, Some(want));
+            let rel = extra as usize;
+            prop_assert_eq!(out.as_slice(), &whole[rel..rel + want as usize]);
+        }
+    }
+
+    /// The CID-verification invariant `readplan` relies on: `data::cid(bytes)` is deterministic and
+    /// distinguishes any tampering, so a host that returns wrong bytes for a chunk CID is always
+    /// caught by `fetch_plan` (which compares `data::cid(got) == chunk.cid`).
+    #[test]
+    fn cid_detects_tampering() {
+        let good = b"the original committed chunk bytes";
+        let cid_good = data::cid(good);
+        // Re-hashing identical bytes yields the same CID (the verification passes for honest bytes).
+        assert_eq!(data::cid(good), cid_good);
+        // A single flipped byte yields a different CID (tampering is always detected).
+        let mut bad = good.to_vec();
+        bad[0] ^= 0x01;
+        assert_ne!(data::cid(&bad), cid_good, "tampered bytes must not match the committed CID");
+    }
 }
