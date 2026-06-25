@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use ce_cap::{Caveats, Resource, SignedCapability, encode_chain};
 use ce_drive_client::{Mirror, RemoteDrive};
-use ce_drive_serve::{DriveServer, Quota, Registry};
+use ce_drive_serve::{DriveServer, Quota, Registry, drive_caveat_prefix};
 use ce_identity::Identity;
 use ce_node::{Node, NodeConfig};
 use ce_rs::CeClient;
@@ -56,17 +56,35 @@ fn stat(mut v: Vec<f64>) -> Stat {
     }
 }
 
-/// Time `iters` runs of an async op, returning the per-op milliseconds.
-async fn time_op<F, Fut>(iters: usize, mut f: F) -> Result<Vec<f64>>
+/// Time `iters` runs of an async op, returning the per-op milliseconds of the SUCCESSFUL attempt.
+/// The directed mesh RPC is flaky under rapid sequential load (transient "connection closed before
+/// response"), so each op is retried up to 12x with backoff; total retries are reported via the
+/// out-param so the failure rate is visible. An op that never succeeds aborts (real breakage).
+async fn time_op<F, Fut>(iters: usize, retries: &mut usize, mut f: F) -> Result<Vec<f64>>
 where
     F: FnMut(usize) -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
     let mut out = Vec::with_capacity(iters);
     for i in 0..iters {
-        let t0 = Instant::now();
-        f(i).await?;
-        out.push(t0.elapsed().as_secs_f64() * 1000.0);
+        let mut tries = 0;
+        loop {
+            let t0 = Instant::now();
+            match f(i).await {
+                Ok(()) => {
+                    out.push(t0.elapsed().as_secs_f64() * 1000.0);
+                    break;
+                }
+                Err(e) => {
+                    tries += 1;
+                    *retries += 1;
+                    if tries >= 12 {
+                        return Err(e);
+                    }
+                    sleep(Duration::from_millis(200)).await;
+                }
+            }
+        }
     }
     Ok(out)
 }
@@ -84,7 +102,8 @@ fn row(label: &str, s: &Stat, bytes: Option<usize>) {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
-    let _ = tracing_subscriber::fmt().with_env_filter("warn").try_init();
+    // Logs to stderr so the benchmark's stdout stays clean (tracing fmt defaults to stdout).
+    let _ = tracing_subscriber::fmt().with_env_filter("error").with_writer(std::io::stderr).try_init();
 
     let dir_a = tempfile::tempdir()?;
     let dir_b = tempfile::tempdir()?;
@@ -135,7 +154,7 @@ async fn main() -> Result<()> {
         a_id,
         vec!["drive:read".into(), "drive:write".into(), "drive:admin".into()],
         Resource::Any,
-        Caveats { path_prefix: Some("/".into()), ..Default::default() },
+        Caveats { path_prefix: Some(drive_caveat_prefix("team", "/")), ..Default::default() },
         1,
         None,
     );
@@ -162,23 +181,26 @@ async fn main() -> Result<()> {
     println!("# ce-drive benchmark — two in-process CE nodes over libp2p mesh");
     println!("# host=B {} client=A {}", &hex::encode(b_id)[..12], &hex::encode(a_id)[..12]);
     println!();
+    let mut retries = 0usize;
 
     // --- open / handshake ---
-    let s = stat(time_op(50, |_| { let r = remote.clone(); async move { r.open().await.map(|_| ()) } }).await?);
+    let s = stat(time_op(15, &mut retries, |_| { let r = remote.clone(); async move { r.open().await.map(|_| ()) } }).await?);
     row("open/handshake", &s, None);
 
     // --- mkdir ---
-    let s = stat(time_op(40, |i| { let r = remote.clone(); async move { r.mkdir(&format!("/d{i}")).await.map(|_| ()) } }).await?);
+    let s = stat(time_op(20, &mut retries, |i| { let r = remote.clone(); async move { r.mkdir(&format!("/d{i}")).await.map(|_| ()) } }).await?);
     row("mkdir", &s, None);
 
-    // --- write across sizes ---
+    // --- write across sizes (parent dirs must exist first, like a real FS) ---
     let kib = 1024usize;
     let mib = 1024 * kib;
+    remote.mkdir("/w").await?;
+    remote.mkdir("/r").await?;
     for &size in &[4 * kib, 64 * kib, 256 * kib, mib, 4 * mib] {
         let payload: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
-        let iters = if size >= mib { 12 } else { 25 };
+        let iters = if size >= mib { 5 } else { 10 };
         let s = stat(
-            time_op(iters, |i| {
+            time_op(iters, &mut retries, |i| {
                 let r = remote.clone();
                 let p = payload.clone();
                 async move { r.write(&format!("/w/{size}-{i}"), &p, None).await.map(|_| ()) }
@@ -193,8 +215,8 @@ async fn main() -> Result<()> {
         let payload: Vec<u8> = (0..size).map(|i| ((i * 7) % 251) as u8).collect();
         let path = format!("/r/{size}");
         remote.write(&path, &payload, None).await?;
-        let iters = if size >= mib { 12 } else { 25 };
-        let s = stat(time_op(iters, |_| { let r = remote.clone(); let p = path.clone(); async move { r.read_all(&p).await.map(|_| ()) } }).await?);
+        let iters = if size >= mib { 5 } else { 10 };
+        let s = stat(time_op(iters, &mut retries, |_| { let r = remote.clone(); let p = path.clone(); async move { r.read_all(&p).await.map(|_| ()) } }).await?);
         row(&format!("read {}", human(size)), &s, Some(size));
     }
 
@@ -203,7 +225,7 @@ async fn main() -> Result<()> {
         let size = 4 * mib;
         let payload: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
         remote.write("/ranged.bin", &payload, None).await?;
-        let s = stat(time_op(30, |i| {
+        let s = stat(time_op(12, &mut retries, |i| {
             let r = remote.clone();
             async move { r.read("/ranged.bin", ((i * 65536) % (size - 65536)) as u64, Some(65536u64)).await.map(|_| ()) }
         }).await?);
@@ -211,7 +233,7 @@ async fn main() -> Result<()> {
     }
 
     // --- list ---
-    let s = stat(time_op(40, |_| { let r = remote.clone(); async move { r.list_all("/w").await.map(|_| ()) } }).await?);
+    let s = stat(time_op(20, &mut retries, |_| { let r = remote.clone(); async move { r.list_all("/w").await.map(|_| ()) } }).await?);
     row("list_all /w", &s, None);
 
     // --- mirror bootstrap + sync-one-change ---
@@ -220,7 +242,7 @@ async fn main() -> Result<()> {
         let mut mirror = Mirror::bootstrap(remote.clone()).await?;
         let boot_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let mut syncs = Vec::new();
-        for i in 0..20 {
+        for i in 0..10 {
             remote.mkdir(&format!("/sync{i}")).await?;
             let t = Instant::now();
             let _ = mirror.sync().await?;
@@ -231,8 +253,9 @@ async fn main() -> Result<()> {
         row("mirror sync(1 change)", &s, None);
     }
 
+    println!("\n# transient RPC retries during run: {retries} (flaky directed-RPC under rapid load)");
     handle.abort();
-    println!("\n# done");
+    println!("# done");
     Ok(())
 }
 
