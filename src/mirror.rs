@@ -69,13 +69,19 @@ impl Mirror {
         // snapshot and set the cursor to *that snapshot's* server_seq.
         let mut applied = 0usize;
         let mut scan_cursor = self.cursor;
+        const PAGE: u32 = 256;
         loop {
-            let (changes, new_cursor) = self.remote.poll(Some(scan_cursor), 256).await?;
+            let (changes, new_cursor) = self.remote.poll(Some(scan_cursor), PAGE).await?;
             if changes.is_empty() {
                 break;
             }
             applied += changes.len();
             scan_cursor = new_cursor;
+            // A partial page means we've reached the tail — no need for a trailing empty poll
+            // (saves one RPC per sync, the common single-change case).
+            if (changes.len() as u32) < PAGE {
+                break;
+            }
         }
         if applied > 0 {
             // Re-bootstrap the tree from a fresh snapshot (always correct; O(snapshot)).
