@@ -3,7 +3,7 @@ name = "ce-drive-client"
 version = "0.1.0"
 edition = "2024"
 description = "CE Drive client — open a remote drive over the CE mesh by capability, bootstrap a DriveTree replica from the Open snapshot, mirror via Poll + beacon, and list/read/write. An app over CE primitives."
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/ce-net/ce-drive"
 authors = ["Leif Rydenfalk <ledamecrydenfalk@gmail.com>"]
 
