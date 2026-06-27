@@ -1,0 +1,22 @@
+# ce-drive-client — access a remote CE drive over the mesh by capability. Installed + supervised by the one `ce` node via ce-appmgr.
+
+[app]
+name    = "ce-drive-client"
+version = "0.1.0"
+summary = "CE Drive client CLI: open/ls/cat/put/mkdir/mv/cp/rm/share/poll/mirror a remote drive over the mesh by capability."
+runtime = "native"
+publisher = "c0be11e0ce0aaa769da6f9970244947d3d32a0c0d8302fb5f41f73d7950be456"
+
+[native]
+bin = "ce-drive"
+[native.artifacts]
+"darwin-amd64" = "PLACEHOLDER_darwin_amd64"
+"linux-amd64"  = "PLACEHOLDER_linux_amd64"
+
+[deps]
+# Local CE node (mesh request transport + blobs); a ce-cap token authorizes each request.
+
+[sandbox]
+tier       = "none"
+net        = "loopback"
+capability = "inherit"
