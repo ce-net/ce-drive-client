@@ -72,12 +72,21 @@ async fn main() -> Result<()> {
     let handle = tokio::spawn(async move { server.run(100).await });
 
     // ----- B grants A drive:write on the whole drive -----
+    //
+    // The prefix MUST be drive-bound: `ce-drive/<drive>[/<subtree>]`, which is what
+    // `drive_caveat_prefix` builds. The host recovers the drive id from it and refuses the request
+    // unless it matches, before running any op — that binding is what stops a cap minted for one
+    // drive being replayed against another drive on the same host. A bare "/" is not in the
+    // namespace and therefore authorizes NOTHING.
     let cap = SignedCapability::issue(
         &b_identity,
         a_id,
         vec!["drive:read".into(), "drive:write".into(), "drive:admin".into()],
         Resource::Any,
-        Caveats { path_prefix: Some("/".into()), ..Default::default() },
+        Caveats {
+            path_prefix: Some(ce_drive_serve::drive_caveat_prefix("team", "/")),
+            ..Default::default()
+        },
         1,
         None,
     );
