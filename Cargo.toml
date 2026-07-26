@@ -43,10 +43,11 @@ proptest = "1"
 ce-node = { git = "https://github.com/ce-net/ce" }
 ce-drive-serve = { git = "https://github.com/ce-net/ce-drive-serve" }
 
-[patch."https://github.com/ce-net/ce-rs"]
-ce-rs = { git = "https://github.com/ce-net/ce-rs" }
-
-[patch."https://github.com/ce-net/ce"]
-ce-cap = { git = "https://github.com/ce-net/ce" }
-ce-container = { git = "https://github.com/ce-net/ce" }
-ce-identity = { git = "https://github.com/ce-net/ce" }
+# NO [patch] SECTION, DELIBERATELY — do not reintroduce one. Same story as ce-drive-serve:
+# these entries existed to redirect git URLs onto local path copies so the graph collapsed onto ONE
+# ce-rs / ce-identity. The deps are git deps on those same URLs now, so cargo unifies them by itself.
+# The sweep that converted them rewrote the patch values too, leaving each entry patching a source to
+# ITSELF, which cargo rejects outright ("patches must point to different sources") — this repo could
+# not be built from a clean checkout. Working-tree sources for local dev come from the generated,
+# git-excluded .cargo/config.toml that `tools/ce-dev-link` writes; that is per-machine and does not
+# belong in a committed manifest.

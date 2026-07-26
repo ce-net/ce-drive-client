@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use ce_cap::{Caveats, Resource, SignedCapability, encode_chain};
+use ce_iam_core::{Caveats, Resource, SignedCapability, encode_chain};
 use ce_drive_client::{Mirror, RemoteDrive};
 use ce_drive_serve::{DriveServer, Quota, Registry};
 use ce_identity::Identity;
@@ -38,7 +38,6 @@ async fn main() -> Result<()> {
         listen_port: 14_990,
         data_dir: dir_a.path().to_path_buf(),
         api_port: 18_990,
-        mine: false,
         disable_local_discovery: true,
         ephemeral: true,
         ..Default::default()
@@ -53,7 +52,6 @@ async fn main() -> Result<()> {
         bootstrap_peers: vec![bootstrap],
         data_dir: dir_b.path().to_path_buf(),
         api_port: 18_991,
-        mine: false,
         disable_local_discovery: true,
         ephemeral: true,
         ..Default::default()
